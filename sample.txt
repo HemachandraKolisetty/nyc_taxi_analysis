@@ -1,0 +1,1 @@
+Command: curl -X POST http://localhost:5000/predict      -H "Content-Type: application/json"      -d '{"date": "2024-08-15", "is_amount": false, "model_number": 1, "PULocationID": 2, "DOLocationID": 2}'
