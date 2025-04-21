@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>NY Monthly Trends Choropleth Map</title>
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0; 
+      padding: 0;
+    }
+    #map {
+      height: 600px;
+      width: 100%;
+    }
+    .control-panel {
+      position: absolute;
+      top: 100px;
+      left: 45px;
+      z-index: 1000;
+      background: white;
+      padding: 10px;
+      border-radius: 4px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    }
+    .legend {
+      line-height: 18px;
+      color: #555;
+    }
+    .legend i {
+      width: 18px;
+      height: 18px;
+      float: left;
+      margin-right: 8px;
+      opacity: 0.7;
+    }
+    header {
+    background: #004080; /* Dark blue background */
+    color: #fff;        /* White text color */
+    padding: 20px 0;    /* Vertical padding */
+    text-align: center; /* Center the text horizontally */
+    font-size: 2em;     /* Increase font size */
+    font-weight: bold;  /* Bold text */
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    margin-bottom: 10px; /* Space below the header */
+  }
+  </style>
+</head>
+<body>
+  <header>NY Monthly Trends Choropleth Map</header>
+  
+  <div class="control-panel">
+    <label for="zoneTypeSelect">Zone Type:</label>
+    <select id="zoneTypeSelect">
+      <option value="pickup">Pickup</option>
+      <option value="dropoff">Dropoff</option>
+    </select>
+    <br/><br/>
+    <label for="yearSelect">Year:</label>
+    <select id="yearSelect">
+      <!-- Options will be populated dynamically -->
+    </select>
+    <br/><br/>
+    <label for="monthSelect">Month:</label>
+    <select id="monthSelect">
+      <option value="1">January</option>
+      <option value="2">February</option>
+      <option value="3">March</option>
+      <option value="4">April</option>
+      <option value="5">May</option>
+      <option value="6">June</option>
+      <option value="7">July</option>
+      <option value="8">August</option>
+      <option value="9">September</option>
+      <option value="10">October</option>
+      <option value="11">November</option>
+      <option value="12">December</option>
+    </select>
+  </div>
+  
+  <div id="map"></div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+  
+  <script>
+    // Global variables to hold aggregated data and GeoJSON
+    var aggregatedData = {
+      pickup: {},
+      dropoff: {}
+    };
+    var geojsonData = null;
+    var map, geojsonLayer;
+    
+    // Initialize the Leaflet map centered on NYC.
+    function initMap() {
+      map = L.map('map').setView([40.7128, -74.0060], 10);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+    }
+    
+    // Load the GeoJSON file containing zone boundaries.
+    function loadGeoJSON() {
+      return fetch('vizdata/zones.geojson')
+        .then(function(response) {
+          return response.json();
+        })
+        .then(function(data) {
+          geojsonData = data;
+        });
+    }
+    
+    // Load and parse a CSV file using PapaParse.
+    // 'path' is the CSV file path and 'type' is either "pickup" or "dropoff".
+    function loadCSVData(path, type) {
+      return new Promise(function(resolve, reject) {
+        Papa.parse(path, {
+          download: true,
+          header: true,
+          dynamicTyping: true,
+          complete: function(results) {
+            // Organize CSV data into aggregatedData[type][year][month][zoneID]
+            results.data.forEach(function(row) {
+              var year = row.year;
+              var month = row.month;
+              // Use PULocationID for pickup, DOLocationID for dropoff.
+              var zoneID = (type === "pickup") ? row.PULocationID : row.DOLocationID;
+              if (!aggregatedData[type][year]) {
+                aggregatedData[type][year] = {};
+              }
+              if (!aggregatedData[type][year][month]) {
+                aggregatedData[type][year][month] = {};
+              }
+              aggregatedData[type][year][month][zoneID] = row;
+            });
+            resolve();
+          },
+          error: function(err) {
+            reject(err);
+          }
+        });
+      });
+    }
+    
+    // Populate the Year selection dropdown based on available data.
+    function populateYearSelect() {
+      var yearSet = new Set();
+      ["pickup", "dropoff"].forEach(function(type) {
+        for (var year in aggregatedData[type]) {
+          yearSet.add(year);
+        }
+      });
+      var yearSelect = document.getElementById("yearSelect");
+      yearSelect.innerHTML = "";
+      Array.from(yearSet).sort().forEach(function(year) {
+        var option = document.createElement("option");
+        option.value = year;
+        option.textContent = year;
+        yearSelect.appendChild(option);
+      });
+    }
+    
+    // Define a color scale function based on trip count thresholds.
+    function getColor(tripCount) {
+      return tripCount > 10000 ? '#800026' :
+             tripCount > 5000  ? '#BD0026' :
+             tripCount > 1000  ? '#E31A1C' :
+             tripCount > 500   ? '#FC4E2A' :
+             tripCount > 100   ? '#FD8D3C' :
+             tripCount > 50    ? '#FEB24C' :
+             tripCount > 10    ? '#FED976' :
+                                 '#FFEDA0';
+    }
+    
+    // Style each zone based on the current aggregated data.
+    function styleFeature(feature) {
+      // Here, we assume the GeoJSON contains a property "LocationID"
+      // that matches the CSV zone identifier.
+      var zoneID = feature.properties.LocationID;
+      var zoneType = document.getElementById("zoneTypeSelect").value;
+      var year = document.getElementById("yearSelect").value;
+      var month = document.getElementById("monthSelect").value;
+      var data = aggregatedData[zoneType][year] && aggregatedData[zoneType][year][month] ?
+                 aggregatedData[zoneType][year][month][zoneID] : null;
+      var tripCount = data ? data.trip_count : 0;
+      
+      return {
+        fillColor: getColor(tripCount),
+        weight: 1,
+        opacity: 1,
+        color: 'white',
+        dashArray: '3',
+        fillOpacity: 0.7
+      };
+    }
+    
+    // Update the map by (re)adding the GeoJSON layer based on current filters.
+    function updateMap() {
+      if (geojsonLayer) {
+        map.removeLayer(geojsonLayer);
+      }
+      geojsonLayer = L.geoJson(geojsonData, {
+        style: styleFeature,
+        onEachFeature: function(feature, layer) {
+          var zoneID = feature.properties.LocationID;
+          var zoneType = document.getElementById("zoneTypeSelect").value;
+          var year = document.getElementById("yearSelect").value;
+          var month = document.getElementById("monthSelect").value;
+          var data = aggregatedData[zoneType][year] && aggregatedData[zoneType][year][month] ?
+                     aggregatedData[zoneType][year][month][zoneID] : null;
+          var popupContent = "<strong>" + feature.properties.zone + "</strong><br/>";
+          if (data) {
+            popupContent += "Trips: " + data.trip_count + "<br/>";
+            popupContent += "Total Fare: $" + data.total_fare + "<br/>";
+            popupContent += "Total Tip: $" + data.total_tip + "<br/>";
+            popupContent += "Avg Fare: $" + parseFloat(data.avg_fare).toFixed(2) + "<br/>";
+            popupContent += "Avg Tip: $" + parseFloat(data.avg_tip).toFixed(2);
+          } else {
+            popupContent += "No data available";
+          }
+          layer.bindPopup(popupContent);
+        }
+      }).addTo(map);
+    }
+    
+    // Add a legend to the map.
+    function addLegend() {
+      var legend = L.control({position: 'bottomright'});
+      legend.onAdd = function (map) {
+        var div = L.DomUtil.create('div', 'info legend'),
+            grades = [0, 10, 50, 100, 500, 1000, 5000, 10000],
+            labels = [];
+    
+        // loop through our intervals to generate a label with a colored square for each interval.
+        for (var i = 0; i < grades.length; i++) {
+          div.innerHTML +=
+              '<i style="background:' + getColor(grades[i] + 1) + '"></i> ' +
+              grades[i] + (grades[i + 1] ? '&ndash;' + grades[i + 1] + '<br>' : '+');
+        }
+        return div;
+      };
+      legend.addTo(map);
+    }
+    
+    // Initialize everything: the map, load data files, populate controls, and update the map.
+    initMap();
+    Promise.all([
+      loadGeoJSON(),
+      loadCSVData('vizdata/pickup_year_month_2024.csv', 'pickup'),
+      loadCSVData('vizdata/dropoff_year_month_2024.csv', 'dropoff')
+    ]).then(function() {
+      populateYearSelect();
+      updateMap();
+      addLegend();
+      
+      // Add event listeners for control changes.
+      document.getElementById("zoneTypeSelect").addEventListener("change", updateMap);
+      document.getElementById("yearSelect").addEventListener("change", updateMap);
+      document.getElementById("monthSelect").addEventListener("change", updateMap);
+    }).catch(function(error) {
+      console.error("Error loading data: ", error);
+    });
+  </script>
+</body>
+</html>
